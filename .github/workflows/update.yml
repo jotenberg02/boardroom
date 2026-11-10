@@ -1,0 +1,70 @@
+name: Monthly data refresh
+
+on:
+  schedule:
+    - cron: "17 9 2 * *"     # 09:17 UTC on the 2nd of every month
+  workflow_dispatch:          # "Run workflow" button in the Actions tab
+    inputs:
+      force:
+        description: "Rebuild even if SEC hasn't posted a new quarter"
+        type: boolean
+        default: false
+  push:
+    branches: [main]
+    paths: ["site/**"]        # redeploy when the page itself is edited
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: refresh
+  cancel-in-progress: false
+
+jobs:
+  update:
+    if: github.event_name != 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Cache SEC downloads
+        uses: actions/cache@v4
+        with:
+          path: work/secdata
+          key: secdata-${{ github.run_id }}
+          restore-keys: secdata-
+      - name: Rebuild data
+        env:
+          SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT }}
+        run: python3 -I scripts/update.py ${{ inputs.force && '--force' || '' }}
+      - name: Commit new data
+        run: |
+          git config user.name "boardroom-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add site/board_data.json data/company_meta.json
+          if git diff --cached --quiet; then echo "No data changes."; exit 0; fi
+          git commit -m "Data refresh $(date -u +%Y-%m-%d)"
+          git push
+
+  deploy:
+    needs: update
+    if: always() && (needs.update.result == 'success' || needs.update.result == 'skipped')
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,643 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Boardroom Terminal</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&display=swap">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
+<style>
+/* Layout: one-screen terminal. Amber command line and menu strip on top,
+   the relationship web fills the left, a function panel runs down the right,
+   status line along the bottom. Stacks web-over-panel on phones. */
+:root {
+  --bg: #000;             /* screen black */
+  --panel: #0c0c0d;       /* panel ground */
+  --rule: #2b2b2b;        /* grid lines */
+  --fg: #e8e4da;          /* primary text */
+  --dim: #8e8a80;         /* secondary text */
+  --amber: #ffa028;       /* terminal amber: prompt, companies, focus */
+  --key: #f2c80f;         /* function-key yellow */
+  --bar: #7a1712;         /* panel title bar red */
+  --link: #6fb9ff;        /* clickable entity */
+  --ok: #3fd07a;          /* current seat / known contact */
+  --warn: #c9a14a;        /* seat needs checking */
+  --exec: #ff5b4d;        /* executive on board */
+  --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  color-scheme: dark;
+}
+html, body { height: 100%; }
+body { background: var(--bg); color: var(--fg); font: 12px/1.45 var(--mono); }
+* { box-sizing: border-box; }
+a { color: var(--link); text-decoration: none; cursor: pointer; }
+a:hover, a:focus-visible { text-decoration: underline; }
+:focus-visible { outline: 1px solid var(--amber); outline-offset: 1px; }
+button { font: inherit; cursor: pointer; }
+
+.shell { height: 100%; display: flex; flex-direction: column; gap: 4px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 6px 6px; }
+
+/* command line */
+.cmdrow { display: flex; gap: 0; align-items: stretch; }
+.cmd { position: relative; flex: 1; min-width: 0; }
+.cmd input { width: 100%; height: 30px; background: #000; color: var(--amber); border: 1px solid #3a3a3a; border-right: 0;
+  padding: 0 10px; font: 600 14px var(--mono); text-transform: uppercase; letter-spacing: .03em; }
+.cmd input::placeholder { color: #6a4c1e; text-transform: none; font-weight: 400; }
+.cmd input:focus { outline: none; border-color: var(--amber); }
+.go { background: var(--key); color: #000; border: 0; padding: 0 12px; font-weight: 700; letter-spacing: .04em; }
+.ac { position: absolute; left: 0; right: 0; top: 100%; background: #000; border: 1px solid var(--amber); z-index: 20; max-height: 60vh; overflow-y: auto; }
+.ac div { display: flex; gap: 10px; padding: 4px 10px; cursor: pointer; align-items: baseline; }
+.ac div.on, .ac div:hover { background: #2b1b05; }
+.ac .t { color: var(--amber); min-width: 52px; font-weight: 600; }
+.ac .k { color: var(--dim); margin-left: auto; font-size: 11px; white-space: nowrap; }
+.ac .nm { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* security line + menu */
+.sec { display: flex; gap: 6px 14px; align-items: baseline; flex-wrap: wrap; padding: 2px 0; }
+.sec .tk { background: var(--amber); color: #000; font-weight: 700; padding: 0 6px; }
+.sec .nm { font-weight: 600; font-size: 14px; min-width: 0; }
+.sec .dim { color: var(--dim); }
+.menu { display: flex; gap: 2px 16px; flex-wrap: wrap; border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); padding: 3px 0; }
+.menu button { background: none; border: 0; color: var(--fg); padding: 1px 2px; }
+.menu button b { color: var(--amber); font-weight: 700; margin-right: 4px; }
+.menu button[aria-pressed="true"] { background: var(--amber); color: #000; }
+.menu button[aria-pressed="true"] b { color: #000; }
+.menu .opt { margin-left: auto; display: flex; gap: 14px; color: var(--dim); }
+.menu label { display: flex; gap: 5px; align-items: center; cursor: pointer; }
+.menu input { accent-color: var(--amber); margin: 0; }
+
+/* main area */
+.main { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 400px); gap: 4px; }
+.box { background: var(--panel); border: 1px solid var(--rule); display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+.bh { display: flex; justify-content: space-between; gap: 10px; background: var(--bar); color: #fff; padding: 2px 8px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; flex-wrap: wrap; }
+.bh span:last-child { color: #f3c9c4; font-weight: 400; }
+.web { flex: 1; min-height: 0; position: relative; }
+.web svg { width: 100%; height: 100%; display: block; cursor: grab; }
+.legend { position: absolute; left: 8px; bottom: 6px; display: flex; gap: 12px; flex-wrap: wrap; color: var(--dim); font-size: 11px; pointer-events: none; }
+.legend i { display: inline-block; width: 9px; height: 9px; margin-right: 4px; vertical-align: -1px; }
+.hint { position: absolute; right: 8px; top: 6px; color: var(--dim); font-size: 11px; pointer-events: none; text-align: right; }
+.narrow-only { display: none; }
+.side { overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 10px; }
+@media (max-width: 860px) {
+  .shell { height: auto; min-height: 100%; }
+  .main { grid-template-columns: minmax(0, 1fr); }
+  .web { height: 440px; flex: none; }
+  .menu .opt { margin-left: 0; }
+  .wide-only { display: none; } .narrow-only { display: inline; }
+}
+
+/* web marks */
+.lnk { stroke: #3c3c3c; stroke-width: 1; }
+.lnk.hl { stroke: var(--amber); stroke-width: 1.6; }
+.lnk.path { stroke: var(--amber); stroke-width: 2.2; }
+.nd { cursor: pointer; }
+.nd text { fill: var(--fg); font: 500 10px var(--mono); paint-order: stroke; stroke: #000; stroke-width: 3px; pointer-events: none; }
+.nd.r2 text { fill: var(--dim); font-size: 9px; }
+.nd.co rect { fill: #000; stroke: var(--amber); stroke-width: 1.5; }
+.nd.co text { fill: var(--amber); }
+.nd.pe circle { fill: var(--fg); stroke: #000; stroke-width: 1; }
+.nd.pe.exec circle { stroke: var(--exec); stroke-width: 2; }
+.nd.pe.know circle { fill: var(--ok); }
+.nd.ver circle { fill: var(--warn); }
+.nd.center rect { fill: var(--amber); }
+.nd.center text { fill: #fff; font-size: 12px; font-weight: 700; }
+.nd.sel rect, .nd.sel circle { stroke: #fff; stroke-width: 2.5; }
+.web.hov .nd { opacity: .25; } .web.hov .lnk { opacity: .12; }
+.web.hov .nd.hl { opacity: 1; } .web.hov .lnk.hl { opacity: 1; }
+
+/* side panel content */
+h3 { margin: 0; color: var(--amber); font-size: 11px; letter-spacing: .1em; text-transform: uppercase; font-weight: 600; border-bottom: 1px solid var(--rule); padding-bottom: 2px; }
+.big { font-size: 15px; font-weight: 700; }
+.facts { color: var(--dim); display: flex; flex-direction: column; gap: 2px; }
+.facts b { color: var(--fg); font-weight: 500; }
+table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+th { text-align: left; color: var(--dim); font-weight: 500; font-size: 10px; letter-spacing: .08em; text-transform: uppercase; padding: 2px 4px; border-bottom: 1px solid var(--rule); }
+td { padding: 3px 4px; border-bottom: 1px solid #1a1a1a; vertical-align: top; }
+tr:hover td { background: #151515; }
+td.n { text-align: right; white-space: nowrap; }
+td.d { color: var(--dim); white-space: nowrap; font-size: 11px; }
+.sub { color: var(--dim); font-size: 11px; }
+.chip { display: inline-block; font-size: 9px; letter-spacing: .06em; padding: 0 3px; border: 1px solid; margin-left: 5px; vertical-align: 1px; white-space: nowrap; }
+.chip.exec { color: var(--exec); } .chip.ver { color: var(--warn); } .chip.know { color: var(--ok); } .chip.fund { color: var(--dim); }
+.btn { white-space: nowrap; background: #1d1d1d; border: 1px solid #3a3a3a; color: var(--fg); padding: 1px 7px; }
+.btn.y { background: var(--key); color: #000; border-color: var(--key); font-weight: 700; }
+.btn[aria-pressed="true"] { background: var(--ok); color: #000; border-color: var(--ok); }
+.row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.chain { border: 1px solid var(--rule); padding: 5px 7px; cursor: pointer; display: flex; flex-wrap: wrap; gap: 2px 5px; align-items: baseline; }
+.chain:hover, .chain.on { border-color: var(--amber); background: #1a1206; }
+.chain .h { color: var(--key); font-size: 10px; width: 100%; }
+.chain .ar { color: var(--amber); }
+.pform { display: flex; flex-direction: column; gap: 5px; }
+.pf { display: flex; gap: 6px; align-items: center; }
+.pf label { color: var(--amber); font-weight: 700; width: 38px; flex: none; }
+.pin { position: relative; flex: 1; min-width: 0; }
+.pin input { width: 100%; background: #000; color: var(--amber); border: 1px solid #3a3a3a; padding: 4px 7px; font: 600 12px var(--mono); }
+.pin input:focus { outline: none; border-color: var(--amber); }
+.pin input::placeholder { color: #6a4c1e; font-weight: 400; }
+.note { color: var(--dim); font-size: 11px; line-height: 1.5; margin: 0; }
+select { background: #000; color: var(--fg); border: 1px solid #3a3a3a; padding: 3px 6px; font: inherit; max-width: 100%; }
+.status { display: flex; justify-content: space-between; gap: 10px; color: var(--dim); font-size: 11px; flex-wrap: wrap; border-top: 1px solid var(--rule); padding-top: 3px; }
+.status b { color: var(--amber); font-weight: 600; }
+.loading { color: var(--amber); padding: 30px; }
+</style>
+
+<div class="shell">
+  <div class="cmdrow">
+    <div class="cmd">
+      <input id="q" autocomplete="off" spellcheck="false" placeholder="Ticker, company or director" aria-label="Search companies and directors">
+      <div class="ac" id="ac" hidden></div>
+    </div>
+    <button class="go" id="go">&lt;GO&gt;</button>
+  </div>
+  <div class="sec" id="secline"><span class="tk">BOARD</span><span class="nm">Loading SEC board data…</span></div>
+  <div class="menu" id="menu">
+    <button data-v="detail"><b>1)</b>Board</button>
+    <button data-v="path"><b>2)</b>Path Finder</button>
+    <button data-v="hubs"><b>3)</b>Connectors</button>
+    <button data-v="sector"><b>4)</b>Sector</button>
+    <button data-v="mine"><b>5)</b>My Network</button>
+    <button data-v="about"><b>6)</b>About</button>
+    <span class="opt">
+      <label><input type="checkbox" id="optFunds" checked> Hide funds</label>
+      <label title="Seats with no SEC filing in the last 15 months. Some of these directors have left the board."><input type="checkbox" id="optVerify"> Include older seats</label>
+    </span>
+  </div>
+  <div class="main">
+    <section class="box">
+      <div class="bh"><span id="webTitle">Relationship web</span><span id="webMeta"></span></div>
+      <div class="web" id="web">
+        <svg id="svg" role="img" aria-label="Network of companies and directors"></svg>
+        <div class="hint"><span class="wide-only">Click to inspect · double-click to re-center · drag · scroll to zoom</span><span class="narrow-only">Tap for details · pinch to zoom</span></div>
+        <div class="legend"><span><i style="background:var(--amber)"></i>Company</span><span><i style="background:var(--fg);border-radius:50%"></i>Director</span><span><i style="border:2px solid var(--exec);border-radius:50%"></i>Executive</span><span><i style="background:var(--ok);border-radius:50%"></i>You know</span></div>
+      </div>
+    </section>
+    <aside class="box">
+      <div class="bh"><span id="sideTitle">Board</span><span id="sideMeta"></span></div>
+      <div class="side" id="side"><div class="loading">LOADING…</div></div>
+    </aside>
+  </div>
+  <div class="status"><span id="stat">SEC Forms 3/4/5</span><span>Source: <b>SEC EDGAR</b> insider filings · each link is a shared board seat</span></div>
+</div>
+
+<script>
+"use strict";
+let D, C, P, S, byP, byC, nameIdx = [];
+// center: {t:'c'|'p', i}; sel: node id; view: side panel mode
+const st = { center: null, sel: null, view: "detail", from: null, fromCo: null, sector: "", chainOn: -1 };
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const store = {
+  get(k, d) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} }
+};
+let mine = new Set();  // person indexes; saved to storage as CIKs so a data refresh keeps them
+const opt = { funds: true, verify: false };
+
+// companies: [cik, name, ticker, exch, sicDesc, hqState, isFund]
+// people:    [cik, name]
+// seats:     [p, c, first, last, current, officer, title]
+const saveMine = () => store.set("bt-mine-cik", [...mine].map(p => P[p][0]));
+const seatOK = s => (s[4] || opt.verify) && !(opt.funds && C[s[1]][6]);
+const coSeats = c => byC[c].filter(seatOK);
+const pSeats = p => byP[p].filter(seatOK);
+const yr = d => d.slice(0, 7);
+const coName = c => C[c][1].replace(/\s*\/[A-Z]{2,}\/?$/, "");
+const tick = c => C[c][2] || coName(c).split(/[ ,]/)[0].toUpperCase();
+const last = p => { const w = P[p][1].split(" "); const s = w[w.length - 1]; return /^(Jr\.?|Sr\.?|II|III|IV)$/i.test(s) && w.length > 1 ? w[w.length - 2] : s; };
+const isExec = p => byP[p].some(s => s[5] && seatOK(s));
+
+const coLink = c => `<a data-co="${c}">${esc(coName(c))}</a>${C[c][2] ? ` <span class="sub">${esc(C[c][2])}</span>` : ""}`;
+const pLink = p => `<a data-p="${p}">${esc(P[p][1])}</a>${mine.has(p) ? '<span class="chip know">KNOW</span>' : ""}`;
+const starBtn = p => `<button class="btn" data-star="${p}" aria-pressed="${mine.has(p)}">${mine.has(p) ? "✓ KNOW" : "+ KNOW"}</button>`;
+function seatChips(s) {
+  let h = "";
+  if (s[5]) h += `<span class="chip exec">${esc((s[6] || "EXEC").toUpperCase())}</span>`;
+  if (!s[4]) h += `<span class="chip ver" title="No SEC filing for this seat since ${esc(yr(s[3]))}. The director may have left.">OLDER</span>`;
+  return h;
+}
+const edgarP = p => `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=${P[p][0]}&owner=include&type=4`;
+const edgarProxy = c => `https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK=${C[c][0]}&type=DEF+14A`;
+
+/* ================= WEB ================= */
+const svg = d3.select("#svg"), root = svg.append("g");
+const zoom = d3.zoom().scaleExtent([0.25, 4]).on("zoom", e => root.attr("transform", e.transform));
+svg.call(zoom).on("dblclick.zoom", null);
+let sim = null, curNodes = [], curLinks = [];
+
+// Ego web: center + ring 1 (its board / boards) + ring 2 (one more step, capped).
+function egoGraph() {
+  const N = new Map(), L = [];
+  const add = (id, o) => { if (!N.has(id)) N.set(id, Object.assign({ id }, o)); return N.get(id); };
+  const link = (a, b, seat) => L.push({ source: a, target: b, seat });
+  const { t, i } = st.center;
+  if (t === "c") {
+    add("c" + i, { t: "c", i, ring: 0 });
+    const seats = coSeats(i);
+    seats.forEach(s => { add("p" + s[0], { t: "p", i: s[0], ring: 1, ver: !s[4] }); link("c" + i, "p" + s[0], s); });
+    const score = new Map();
+    seats.forEach(s => pSeats(s[0]).forEach(o => { if (o[1] !== i) score.set(o[1], (score.get(o[1]) || 0) + 1); }));
+    const keep = new Set([...score].sort((a, b) => b[1] - a[1]).slice(0, 70).map(e => e[0]));
+    seats.forEach(s => pSeats(s[0]).forEach(o => { if (keep.has(o[1])) { add("c" + o[1], { t: "c", i: o[1], ring: 2 }); link("p" + s[0], "c" + o[1], o); } }));
+  } else {
+    add("p" + i, { t: "p", i, ring: 0 });
+    const boards = pSeats(i);
+    boards.forEach(s => { add("c" + s[1], { t: "c", i: s[1], ring: 1 }); link("p" + i, "c" + s[1], s); });
+    const cand = [];
+    boards.forEach(s => coSeats(s[1]).forEach(o => { if (o[0] !== i) cand.push(o); }));
+    // Favor fellow directors you know, then the best connected.
+    const rank = o => (mine.has(o[0]) ? 1000 : 0) + pSeats(o[0]).length * 10 + (o[5] ? 5 : 0);
+    cand.sort((a, b) => rank(b) - rank(a)).slice(0, 90).forEach(o => { add("p" + o[0], { t: "p", i: o[0], ring: 2, ver: !o[4] }); link("c" + o[1], "p" + o[0], o); });
+  }
+  return { nodes: [...N.values()], links: L };
+}
+
+// Path web: union of the found chains, laid out left (your contact) to right (target).
+function pathGraph(chains) {
+  const N = new Map(), L = new Map();
+  chains.forEach((ch, k) => ch.forEach((e, j) => {
+    const id = e.p !== undefined ? "p" + e.p : "c" + e.c;
+    const lvl = ch.length - 1 - j;  // target = 0
+    if (!N.has(id)) N.set(id, { id, t: e.p !== undefined ? "p" : "c", i: e.p ?? e.c, ring: lvl === 0 ? 0 : 1, lvl, chains: new Set() });
+    N.get(id).chains.add(k);
+    if (j) { const prev = ch[j - 1], pid = prev.p !== undefined ? "p" + prev.p : "c" + prev.c; const key = pid + ">" + id; if (!L.has(key)) L.set(key, { source: pid, target: id, path: true, chains: new Set() }); L.get(key).chains.add(k); }
+  }));
+  return { nodes: [...N.values()], links: [...L.values()] };
+}
+
+function drawWeb(graph, mode) {
+  const el = $("#web"), W = el.clientWidth, H = el.clientHeight;
+  if (sim) sim.stop();
+  root.selectAll("*").remove();
+  curNodes = graph.nodes; curLinks = graph.links;
+  const center = curNodes.find(n => n.ring === 0);
+  if (center) { center.fx = mode === "path" ? W * 0.82 : W / 2; center.fy = H / 2; }
+  const R = Math.min(W, H);
+  const maxLvl = d3.max(curNodes, n => n.lvl || 0) || 1;
+
+  const lk = root.append("g").selectAll("line").data(curLinks).join("line").attr("class", d => "lnk" + (d.path ? " path" : ""));
+  const nd = root.append("g").selectAll("g").data(curNodes, d => d.id).join("g")
+    .attr("class", d => {
+      let c = "nd " + (d.t === "c" ? "co" : "pe") + " r" + d.ring;
+      if (d.ring === 0) c += " center";
+      if (d.t === "p" && mine.has(d.i)) c += " know";
+      if (d.t === "p" && isExec(d.i)) c += " exec";
+      if (d.ver) c += " ver";
+      if (d.id === st.sel) c += " sel";
+      return c;
+    });
+  nd.each(function (d) {
+    const g = d3.select(this);
+    const big = d.ring === 0 ? 16 : d.ring === 1 ? 11 : 8;
+    if (d.t === "c") g.append("rect").attr("x", -big / 2).attr("y", -big / 2).attr("width", big).attr("height", big);
+    else g.append("circle").attr("r", d.ring === 0 ? 8 : d.ring === 1 ? 5.5 : 4);
+    const full = d.ring === 0 || ((d.ring === 1 || mode === "path") && W >= 600);
+    const label = d.t === "c" ? tick(d.i) : full ? P[d.i][1] : last(d.i);
+    // Path routes run in a line, so stack labels above (people) and below (companies).
+    if (mode === "path") g.append("text").attr("text-anchor", "middle").attr("y", d.t === "p" ? -11 : big / 2 + 13).text(label);
+    else g.append("text").attr("x", big / 2 + 4).attr("y", 3.5).text(label);
+  });
+  nd.on("click", (e, d) => { e.stopPropagation(); select(d.id); })
+    .on("dblclick", (e, d) => { e.stopPropagation(); recenter(d.t, d.i); })
+    .on("mouseenter", (e, d) => hover(d.id)).on("mouseleave", () => hover(null))
+    .call(d3.drag()
+      .on("start", (e, d) => { if (!e.active) sim.alphaTarget(0.2).restart(); d.fx = d.x; d.fy = d.y; })
+      .on("drag", (e, d) => { d.fx = e.x; d.fy = e.y; })
+      .on("end", (e, d) => { if (!e.active) sim.alphaTarget(0); if (d.ring !== 0) { d.fx = null; d.fy = null; } }));
+
+  // Seed ego nodes evenly around their ring (ring 2 next to its first parent)
+  // so a few very connected directors don't drag the whole web to one side.
+  if (mode !== "path") {
+    const r1 = curNodes.filter(n => n.ring === 1), ang = new Map();
+    r1.forEach((n, k) => { const a = (k / r1.length) * 2 * Math.PI; ang.set(n.id, a); n.x = W / 2 + Math.cos(a) * R * 0.2; n.y = H / 2 + Math.sin(a) * R * 0.2; });
+    const r2 = curNodes.filter(n => n.ring === 2);
+    r2.forEach((n, k) => {
+      const l = curLinks.find(l => l.target === n.id && ang.has(l.source)) || curLinks.find(l => l.source === n.id && ang.has(l.target));
+      const a = (l ? ang.get(ang.has(l.source) ? l.source : l.target) : 0) + ((k % 7) - 3) * 0.06;
+      n.x = W / 2 + Math.cos(a) * R * 0.42; n.y = H / 2 + Math.sin(a) * R * 0.42;
+    });
+  }
+  sim = d3.forceSimulation(curNodes).alphaDecay(0.045)
+    .force("link", d3.forceLink(curLinks).id(d => d.id).distance(l => mode === "path" ? 60 : (l.source.ring === 0 || l.target.ring === 0 ? R * 0.2 : 50)).strength(l => mode === "path" ? 0.3 : (l.source.ring === 0 || l.target.ring === 0 ? 0.5 : 0.04)))
+    .force("charge", d3.forceManyBody().strength(mode === "path" ? -260 : -90))
+    .force("collide", d3.forceCollide(d => d.ring === 0 ? 30 : 14));
+  if (mode === "path") {
+    sim.force("x", d3.forceX(d => W * 0.82 - (d.lvl / maxLvl) * W * 0.68).strength(0.9))
+       .force("y", d3.forceY(H / 2).strength(0.05));
+  } else {
+    sim.force("r", d3.forceRadial(d => d.ring === 0 ? 0 : d.ring === 1 ? R * 0.2 : R * 0.42, W / 2, H / 2).strength(0.9));
+  }
+  sim.on("tick", () => {
+    lk.attr("x1", d => d.source.x).attr("y1", d => d.source.y).attr("x2", d => d.target.x).attr("y2", d => d.target.y);
+    nd.attr("transform", d => `translate(${d.x},${d.y})`);
+  });
+  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) { sim.stop(); for (let k = 0; k < 300; k++) sim.tick(); sim.on("tick")(); }
+  svg.call(zoom.transform, d3.zoomIdentity);
+  // Once the layout settles, zoom so the whole web (labels included) fits the panel.
+  sim.on("end", () => {
+    const b = root.node().getBBox(); if (!b.width) return;
+    const k = Math.min(1.4, 0.92 * Math.min(W / b.width, H / b.height));
+    svg.transition().duration(400).call(zoom.transform, d3.zoomIdentity.translate(W / 2 - k * (b.x + b.width / 2), H / 2 - k * (b.y + b.height / 2)).scale(k));
+  });
+  svg.on("click", () => select(null));
+  const nc = curNodes.filter(n => n.t === "c").length, np = curNodes.length - nc;
+  $("#webMeta").textContent = `${nc} companies · ${np} directors`;
+}
+function hover(id) {
+  const web = $("#web");
+  if (!id) { web.classList.remove("hov"); root.selectAll(".hl").classed("hl", false); return; }
+  const near = new Set([id]);
+  curLinks.forEach(l => { if (l.source.id === id) near.add(l.target.id); if (l.target.id === id) near.add(l.source.id); });
+  web.classList.add("hov");
+  root.selectAll(".nd").classed("hl", d => near.has(d.id));
+  root.selectAll(".lnk").classed("hl", l => l.source.id === id || l.target.id === id);
+}
+function select(id) {
+  st.sel = id;
+  root.selectAll(".nd").classed("sel", d => d.id === id);
+  if (st.view !== "path") st.view = "detail";
+  renderSide();
+  // On phones the panel sits below the web, so bring the details into view.
+  if (id && window.matchMedia("(max-width: 860px)").matches) $("#side").closest(".box").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+function recenter(t, i) {
+  st.center = { t, i }; st.sel = (t === "c" ? "c" : "p") + i; st.chainOn = -1;
+  if (st.view === "path" && t === "p") st.view = "detail";
+  renderAll();
+}
+
+/* ================= PATHS ================= */
+function findPaths(target, sources, max = 8, maxHops = 6) {
+  if (!sources.size) return [];
+  const prevP = new Map(), prevC = new Map([[target, -1]]);
+  let frontierC = [target];
+  const hits = [];
+  for (let hop = 1; hop <= maxHops; hop++) {
+    const nextP = [];
+    for (const c of frontierC) for (const s of coSeats(c)) {
+      if (!prevP.has(s[0])) { prevP.set(s[0], c); nextP.push(s[0]); if (sources.has(s[0])) hits.push(s[0]); }
+    }
+    if (hits.length) break;
+    const nextC = [];
+    for (const p of nextP) for (const s of pSeats(p)) if (!prevC.has(s[1])) { prevC.set(s[1], p); nextC.push(s[1]); }
+    frontierC = nextC;
+  }
+  return hits.slice(0, max).map(p => {
+    const chain = [{ p }];
+    let c = prevP.get(p);
+    while (c !== target) { chain.push({ c }); const q = prevC.get(c); chain.push({ p: q }); c = prevP.get(q); }
+    chain.push({ c: target });
+    return chain;
+  });
+}
+function pathSources() {
+  // From a company: start from everyone on its board, then put the company in front of each chain.
+  if (st.fromCo != null) return { set: new Set(coSeats(st.fromCo).map(s => s[0])), label: coName(st.fromCo), ex: false, co: st.fromCo };
+  if (st.from != null) return { set: new Set([st.from]), label: P[st.from][1], ex: false };
+  if (mine.size) return { set: mine, label: `My Network (${mine.size})`, ex: false };
+  return { set: new Set(), label: "", ex: true };
+}
+let chains = [];
+
+/* ================= SIDE PANEL ================= */
+function sideDetail() {
+  const id = st.sel || (st.center.t === "c" ? "c" : "p") + st.center.i;
+  const t = id[0], i = +id.slice(1);
+  if (t === "c") {
+    const seats = coSeats(i).sort((a, b) => b[5] - a[5] || b[4] - a[4] || P[a[0]][1].localeCompare(P[b[0]][1]));
+    const co = C[i];
+    return `<div class="big">${esc(coName(i))}</div>
+      <div class="facts"><span><b>${esc(co[2] || "—")}</b> ${esc(co[3] || "")}${co[6] ? " · investment fund" : ""}</span>${co[4] ? `<span>${esc(co[4])}</span>` : ""}${co[5] ? `<span>HQ ${esc(co[5])}</span>` : ""}</div>
+      <div class="row">${st.center.t === "c" && st.center.i === i ? "" : `<button class="btn y" data-center="c${i}">WEB ▸</button>`}<button class="btn y" data-pathto="${i}">PATH TO ▸</button><button class="btn" data-pathfromco="${i}">PATH FROM ▸</button><a href="${edgarProxy(i)}" target="_blank" rel="noopener">Proxy on EDGAR ↗</a></div>
+      <h3>Board · ${seats.length}</h3>
+      <table><thead><tr><th>Director</th><th>Other boards</th><th></th></tr></thead><tbody>${seats.map(s => {
+        const others = pSeats(s[0]).filter(o => o[1] !== i);
+        return `<tr><td>${pLink(s[0])}${seatChips(s)}</td><td class="sub">${others.map(o => `<a data-co="${o[1]}">${esc(tick(o[1]))}</a>`).join(" ") || "—"}</td><td>${starBtn(s[0])}</td></tr>`;
+      }).join("") || `<tr><td colspan="3" class="sub">No directors under these filters.</td></tr>`}</tbody></table>
+      <p class="note">Directors with a filing in the 15 months to ${esc(D.asof)}. Red tag = also an executive here.</p>`;
+  }
+  const seats = byP[i].slice().sort((a, b) => b[4] - a[4] || b[3].localeCompare(a[3]));
+  return `<div class="big">${esc(P[i][1])}</div>
+    <div class="facts"><span>${pSeats(i).length} current listed board${pSeats(i).length === 1 ? "" : "s"}</span></div>
+    <div class="row">${starBtn(i)}${st.center.t === "p" && st.center.i === i ? "" : `<button class="btn y" data-center="p${i}">WEB ▸</button>`}<button class="btn" data-pathfrom="${i}">PATHS FROM</button><a href="${edgarP(i)}" target="_blank" rel="noopener">Form 4s ↗</a></div>
+    <h3>Boards on file</h3>
+    <table><thead><tr><th>Company</th><th>Filings</th></tr></thead><tbody>${seats.map(s => `<tr><td><a data-co="${s[1]}">${esc(coName(s[1]))}</a> <span class="sub">${esc(C[s[1]][2] || "")}</span>${seatChips(s)}${C[s[1]][6] ? '<span class="chip fund">FUND</span>' : ""}</td><td class="d">${yr(s[2])}–${yr(s[3])}</td></tr>`).join("")}</tbody></table>`;
+}
+function sidePath() {
+  const src = pathSources();
+  const t = st.center.t === "c" ? st.center.i : null;
+  const fromVal = src.ex ? "" : src.co != null ? `${C[src.co][2] || ""} ${coName(src.co)}`.trim() : st.from != null ? P[st.from][1] : "";
+  const head = `<div class="pform">
+      <div class="pf"><label for="pFrom">FROM</label><div class="pin"><input id="pFrom" autocomplete="off" spellcheck="false" value="${esc(fromVal)}" placeholder="${mine.size ? "My Network" : "Company or director"}"><div class="ac" id="pFromAc" hidden></div></div>${st.from != null || st.fromCo != null ? `<button class="btn" data-clearfrom="1" title="Start from My Network">×</button>` : ""}</div>
+      <div class="pf"><label for="pTo">TO</label><div class="pin"><input id="pTo" autocomplete="off" spellcheck="false" value="${t == null ? "" : esc(`${C[t][2] || ""} ${coName(t)}`.trim())}" placeholder="Company"><div class="ac" id="pToAc" hidden></div></div>${st.fromCo != null && t != null ? `<button class="btn" data-swap="1" title="Swap FROM and TO">⇅</button>` : ""}</div>
+    </div>`;
+  if (src.ex) return head + `<p class="note">Enter a FROM company or director. Or press + KNOW next to people you know, and routes will start from all of them.</p>`;
+  if (t == null) return head + `<p class="note">Choose a TO company.</p>`;
+  if (src.co === t) return head + `<p class="note">FROM and TO are the same company. Choose a different one.</p>`;
+  const list = chains.map((ch, k) => {
+    const people = ch.filter(e => e.p !== undefined).length, boards = ch.filter(e => e.c !== undefined).length;
+    const h = src.co != null ? (people === 1 ? "SHARED DIRECTOR" : `${people} DIRECTORS · ${people - 1} BOARD${people === 2 ? "" : "S"} BETWEEN`) : (boards === 1 ? "SITS ON THIS BOARD" : boards + " BOARDS AWAY");
+    const older = (p, c) => { const x = byP[p].find(z => z[1] === c); return x && !x[4] ? '<span class="chip ver" title="Older seat: no recent SEC filing">OLDER</span>' : ""; };
+    const parts = ch.map((e, j) => e.p !== undefined ? `<a data-p="${e.p}">${esc(P[e.p][1])}</a>${mine.has(e.p) ? '<span class="chip know">KNOW</span>' : ""}${older(e.p, (ch[j - 1] || {}).c) || older(e.p, (ch[j + 1] || {}).c)}` : j === 0 ? `<a data-co="${e.c}">${esc(tick(e.c))}</a>` : `<span class="sub">${j === ch.length - 1 ? "on" : "via"}</span> <a data-co="${e.c}">${esc(tick(e.c))}</a>`);
+    return `<div class="chain${k === st.chainOn ? " on" : ""}" data-chain="${k}"><span class="h">${h}</span>${parts.join(' <span class="ar">→</span> ')}</div>`;
+  }).join("");
+  return head + (list || `<p class="note">No route within 6 boards under the current filters. Try including older seats${src.co != null && !coSeats(src.co).length ? `, or check ${esc(coName(src.co))}: it has no directors under these filters` : ""}.</p>`)
+    + `<p class="note">A shared board means two people have served together, not that they will make an introduction. Click a route to light it up on the web.</p>`;
+}
+function hubList(filterCo) {
+  const cnt = new Map();
+  for (const s of S) if (seatOK(s) && (!filterCo || filterCo(s[1]))) cnt.set(s[0], (cnt.get(s[0]) || 0) + 1);
+  return [...cnt].filter(e => e[1] >= 2).sort((a, b) => b[1] - a[1] || P[a[0]][1].localeCompare(P[b[0]][1]));
+}
+function sideHubs() {
+  const hubs = hubList();
+  return `<p class="note">${hubs.length.toLocaleString()} directors sit on 2+ listed boards. One warm contact here reaches all of their boards.</p>
+    <table><thead><tr><th>#</th><th>Director</th><th>Bds</th><th></th></tr></thead><tbody>${hubs.slice(0, 100).map(([p, n], k) => `<tr><td class="d">${k + 1}</td><td>${pLink(p)}<div class="sub">${pSeats(p).map(s => esc(tick(s[1]))).join(" ")}</div></td><td class="n">${n}</td><td>${starBtn(p)}</td></tr>`).join("")}</tbody></table>`;
+}
+function sideSector() {
+  const sec = st.sector, inSec = c => C[c][4] === sec;
+  const cos = sec ? [...new Set(S.filter(s => seatOK(s) && inSec(s[1])).map(s => s[1]))].sort((a, b) => coName(a).localeCompare(coName(b))) : [];
+  const hubs = sec ? hubList(inSec).slice(0, 25) : [];
+  return `<select id="secSel" aria-label="Industry"><option value="">Choose an industry (SEC SIC)…</option>${D.sectors.map(([s, n]) => `<option value="${esc(s)}"${s === sec ? " selected" : ""}>${esc(s)} (${n})</option>`).join("")}</select>
+    ${sec ? `<h3>Directors bridging this industry</h3>${hubs.length ? `<table><tbody>${hubs.map(([p, n]) => `<tr><td>${pLink(p)}</td><td class="n">${n} bds</td><td>${starBtn(p)}</td></tr>`).join("")}</tbody></table>` : '<p class="note">No director sits on two boards here.</p>'}
+    <h3>Companies · ${cos.length}</h3><table><tbody>${cos.map(c => `<tr><td>${coLink(c)}</td><td class="d">${esc(C[c][5] || "")}</td><td class="n">${coSeats(c).length}</td></tr>`).join("")}</tbody></table>` : `<p class="note">Pick an industry to list its companies and the directors who sit on more than one of them.</p>`}`;
+}
+function sideMine() {
+  const list = [...mine];
+  const reach = new Set();
+  list.forEach(p => pSeats(p).forEach(s => { reach.add(s[1]); coSeats(s[1]).forEach(o => pSeats(o[0]).forEach(x => reach.add(x[1]))); }));
+  return `<div class="facts"><span><b>${list.length}</b> ${list.length === 1 ? "person" : "people"} you know · saved in this browser</span><span><b>${reach.size.toLocaleString()}</b> boards within one shared seat of them</span></div>
+    ${list.length ? `<table><tbody>${list.map(p => `<tr><td>${pLink(p)}<div class="sub">${pSeats(p).map(s => esc(tick(s[1]))).join(" ") || "no current boards"}</div></td><td>${starBtn(p)}</td></tr>`).join("")}</tbody></table>`
+      : `<p class="note">Empty. Press + KNOW next to anyone you, your team or your investors know. Intro paths then start from them.</p>`}`;
+}
+function sideAbout() {
+  return `<h3>Source</h3>
+    <p class="note">Every board seat comes from insider filings (Forms 3, 4 and 5) that directors file with the SEC. Data covers filings from ${esc(D.window[0].slice(0, 7))} to ${esc(D.asof.slice(0, 7))} for companies listed on the NYSE, Nasdaq and Cboe. Industry codes come from each company's SEC profile.</p>
+    <h3>What counts as a seat</h3>
+    <p class="note">A person is shown on a board if they filed as a director of that company at least once in this period. A seat is current if they filed for that company in the 15 months before ${esc(D.asof)}. Directors file at least yearly when they receive stock, so most sitting directors are current. Older seats are hidden by default. Some of those directors have left, and some simply haven't filed.</p>
+    <h3>Accuracy</h3>
+    <p class="note">In a spot check of 20 random companies, 140 of 148 current directors (95%) were named in the company's latest proxy statement. The rest were mostly people who joined or left around the proxy date. Check the proxy (linked on every company) before relying on a seat.</p>
+    <h3>What's not included</h3>
+    <p class="note">Foreign companies that don't file these forms, private companies, and nonprofit boards. Investment funds are hidden by default because one fund family's directors sit on dozens of its funds.</p>
+    <h3>Reading a path</h3>
+    <p class="note">Each link means two people served on the same board in this period. It shows who could know whom, not who will make an introduction.</p>
+    <h3>Your data</h3>
+    <p class="note">People you mark with + KNOW and your last screen are saved only in this browser. Nothing you enter is sent anywhere.</p>`;
+}
+const TITLES = { detail: "Board detail", path: "Path finder", hubs: "Top connectors", sector: "Sector screen", mine: "My network", about: "About this data" };
+function renderSide() {
+  document.querySelectorAll("#menu button").forEach(b => b.setAttribute("aria-pressed", b.dataset.v === st.view));
+  $("#sideTitle").textContent = TITLES[st.view];
+  $("#sideMeta").textContent = st.view === "path" ? `${chains.length} route${chains.length === 1 ? "" : "s"}` : "";
+  const v = st.view;
+  $("#side").innerHTML = v === "detail" ? sideDetail() : v === "path" ? sidePath() : v === "hubs" ? sideHubs() : v === "sector" ? sideSector() : v === "about" ? sideAbout() : sideMine();
+  store.set("bt-state-" + D.asof, { center: st.center, view: st.view, sector: st.sector, from: st.from, fromCo: st.fromCo });
+}
+function renderSec() {
+  const { t, i } = st.center;
+  $("#secline").innerHTML = t === "c"
+    ? `<span class="tk">${esc(C[i][2] || "—")} US</span><span class="nm">${esc(coName(i))}</span><span class="dim">${esc(C[i][4] || "")}</span><span class="dim">${coSeats(i).length} directors</span>`
+    : `<span class="tk">DIRECTOR</span><span class="nm">${esc(P[i][1])}</span><span class="dim">${pSeats(i).length} listed boards</span>`;
+}
+function renderAll() {
+  renderSec();
+  if (st.view === "path" && st.center.t === "c") {
+    const src = pathSources();
+    chains = src.co === st.center.i ? [] : findPaths(st.center.i, src.set);
+    if (src.co != null) chains = chains.map(ch => [{ c: src.co }, ...ch]);
+    $("#webTitle").textContent = "Path web";
+    drawWeb(chains.length ? pathGraph(chains) : egoGraph(), chains.length ? "path" : "ego");
+  } else {
+    chains = [];
+    $("#webTitle").textContent = "Relationship web";
+    drawWeb(egoGraph(), "ego");
+  }
+  renderSide();
+}
+function lightChain(k) {
+  st.chainOn = st.chainOn === k ? -1 : k;
+  root.selectAll(".lnk").classed("hl", l => st.chainOn >= 0 && l.chains && l.chains.has(st.chainOn));
+  $("#web").classList.toggle("hov", st.chainOn >= 0);
+  root.selectAll(".nd").classed("hl", d => st.chainOn >= 0 && d.chains && d.chains.has(st.chainOn));
+  document.querySelectorAll(".chain").forEach(el => el.classList.toggle("on", +el.dataset.chain === st.chainOn));
+}
+
+/* ================= EVENTS ================= */
+document.addEventListener("click", e => {
+  const a = e.target.closest("[data-co],[data-p],[data-star],[data-center],[data-pathto],[data-pathfrom],[data-pathfromco],[data-swap],[data-clearfrom],[data-chain]");
+  if (!a) return;
+  const d = a.dataset;
+  if (d.star) { const p = +d.star; mine.has(p) ? mine.delete(p) : mine.add(p); saveMine(); root.selectAll(".nd").classed("know", n => n.t === "p" && mine.has(n.i)); if (st.view === "path") renderAll(); else renderSide(); }
+  else if (d.co) recenter("c", +d.co);
+  else if (d.p) recenter("p", +d.p);
+  else if (d.center) recenter(d.center[0], +d.center.slice(1));
+  else if (d.pathto) { st.view = "path"; st.center = { t: "c", i: +d.pathto }; st.sel = null; renderAll(); }
+  else if (d.pathfromco) { st.fromCo = +d.pathfromco; st.from = null; st.view = "path"; renderAll(); }
+  else if (d.swap) { const a = st.fromCo; st.fromCo = st.center.i; st.center = { t: "c", i: a }; st.chainOn = -1; renderAll(); }
+  else if (d.pathfrom) { st.from = +d.pathfrom; st.fromCo = null; st.view = "path"; if (st.center.t !== "c") st.center = { t: "c", i: pSeats(st.from)[0]?.[1] ?? 0 }; renderAll(); }
+  else if (d.clearfrom) { st.from = null; st.fromCo = null; renderAll(); }
+  else if (d.chain) lightChain(+d.chain);
+});
+document.addEventListener("change", e => {
+  if (e.target.id === "secSel") { st.sector = e.target.value; renderSide(); }
+  if (e.target.id === "optFunds") { opt.funds = e.target.checked; renderAll(); }
+  if (e.target.id === "optVerify") { opt.verify = e.target.checked; renderAll(); }
+});
+$("#menu").addEventListener("click", e => {
+  const b = e.target.closest("button"); if (!b) return;
+  const was = st.view; st.view = b.dataset.v;
+  if (st.view === "path" || was === "path") renderAll(); else renderSide();
+});
+/* path finder FROM / TO fields */
+const pac = { items: [], on: 0, el: null };
+function drawPac() {
+  if (!pac.el) return;
+  const box = $("#" + pac.el.id + "Ac"); if (!box) return;
+  if (!pac.items.length) { box.hidden = true; return; }
+  box.innerHTML = pac.items.map((it, k) => it.c != null
+    ? `<div data-pi="${k}" class="${k === pac.on ? "on" : ""}"><span class="t">${esc(C[it.c][2] || "—")}</span><span class="nm">${esc(coName(it.c))}</span></div>`
+    : `<div data-pi="${k}" class="${k === pac.on ? "on" : ""}"><span class="t">DIR</span><span class="nm">${esc(P[it.p][1])}</span><span class="k">${esc(dirBoards(it.p))}</span></div>`).join("");
+  box.hidden = false;
+}
+function pickPath(it) {
+  if (pac.el.id === "pFrom") { if (it.c != null) { st.fromCo = it.c; st.from = null; } else { st.from = it.p; st.fromCo = null; } }
+  else st.center = { t: "c", i: it.c };
+  pac.items = []; st.chainOn = -1; renderAll();
+}
+document.addEventListener("input", e => {
+  if (e.target.id !== "pFrom" && e.target.id !== "pTo") return;
+  pac.el = e.target; pac.on = 0;
+  pac.items = search(e.target.value).filter(it => e.target.id === "pFrom" || it.c != null).slice(0, 8);
+  drawPac();
+});
+document.addEventListener("keydown", e => {
+  if (e.target.id !== "pFrom" && e.target.id !== "pTo") return;
+  if (e.key === "ArrowDown") { pac.on = Math.min(pac.on + 1, pac.items.length - 1); drawPac(); e.preventDefault(); }
+  else if (e.key === "ArrowUp") { pac.on = Math.max(pac.on - 1, 0); drawPac(); e.preventDefault(); }
+  else if (e.key === "Enter" && pac.items[pac.on]) pickPath(pac.items[pac.on]);
+  else if (e.key === "Escape") { pac.items = []; drawPac(); }
+});
+document.addEventListener("mousedown", e => { const d = e.target.closest("[data-pi]"); if (d) { e.preventDefault(); pickPath(pac.items[+d.dataset.pi]); } });
+document.addEventListener("focusin", e => { if (e.target.id === "pFrom" || e.target.id === "pTo") e.target.select(); });
+
+document.addEventListener("keydown", e => {
+  if (e.target.closest("input,select,textarea")) return;
+  if (e.key === "/") { e.preventDefault(); $("#q").focus(); }
+  else if (/^[1-5]$/.test(e.key)) $("#menu").querySelectorAll("button")[e.key - 1].click();
+});
+let rsz; window.addEventListener("resize", () => { clearTimeout(rsz); rsz = setTimeout(() => D && renderAll(), 200); });
+
+/* command line */
+let acItems = [], acOn = 0;
+function search(q) {
+  q = q.trim().toLowerCase(); if (!q) return [];
+  const out = [];
+  for (const it of nameIdx) {
+    if (it.tk && it.tk === q) out.push([0, it]);
+    else { const k = it.s.indexOf(q); if (k >= 0) out.push([k === 0 || it.s[k - 1] === " " ? 1 : 2, it]); }
+  }
+  return out.sort((a, b) => a[0] - b[0] || b[1].w - a[1].w).slice(0, 12).map(x => x[1]);
+}
+function drawAc() {
+  const box = $("#ac");
+  if (!acItems.length) { box.hidden = true; return; }
+  box.innerHTML = acItems.map((it, k) => it.c != null
+    ? `<div data-i="${k}" class="${k === acOn ? "on" : ""}"><span class="t">${esc(C[it.c][2] || "—")}</span><span class="nm">${esc(coName(it.c))}</span><span class="k">US Equity · BOARD</span></div>`
+    : `<div data-i="${k}" class="${k === acOn ? "on" : ""}"><span class="t">DIR</span><span class="nm">${esc(P[it.p][1])}</span><span class="k">${esc(dirBoards(it.p))}</span></div>`).join("");
+  box.hidden = false;
+}
+const dirBoards = p => { const b = pSeats(p).length ? pSeats(p) : byP[p]; return b.slice(0, 3).map(s => tick(s[1])).join(" ") + (b.length > 3 ? ` +${b.length - 3}` : ""); };
+function pick(it) {
+  $("#q").value = ""; acItems = []; drawAc(); $("#q").blur();
+  if (it.c != null) recenter("c", it.c);
+  else if (st.view === "path") { st.from = it.p; renderAll(); }
+  else recenter("p", it.p);
+}
+$("#q").addEventListener("input", e => { acItems = search(e.target.value); acOn = 0; drawAc(); });
+$("#q").addEventListener("keydown", e => {
+  if (e.key === "ArrowDown") { acOn = Math.min(acOn + 1, acItems.length - 1); drawAc(); e.preventDefault(); }
+  else if (e.key === "ArrowUp") { acOn = Math.max(acOn - 1, 0); drawAc(); e.preventDefault(); }
+  else if (e.key === "Enter" && acItems[acOn]) pick(acItems[acOn]);
+  else if (e.key === "Escape") { acItems = []; drawAc(); }
+});
+$("#go").addEventListener("click", () => { if (acItems[acOn]) pick(acItems[acOn]); else $("#q").focus(); });
+$("#ac").addEventListener("mousedown", e => { const d = e.target.closest("[data-i]"); if (d) { e.preventDefault(); pick(acItems[+d.dataset.i]); } });
+$("#q").addEventListener("blur", () => setTimeout(() => { acItems = []; drawAc(); }, 150));
+
+fetch("board_data.json").then(r => r.json()).then(d => {
+  D = d; C = d.companies; P = d.people; S = d.seats;
+  byP = P.map(() => []); byC = C.map(() => []);
+  for (const s of S) { byP[s[0]].push(s); byC[s[1]].push(s); }
+  C.forEach((c, k) => nameIdx.push({ c: k, s: (c[1] + " " + (c[2] || "")).toLowerCase(), tk: (c[2] || "").toLowerCase(), w: 100 + byC[k].length }));
+  P.forEach((p, k) => nameIdx.push({ p: k, s: p[1].toLowerCase(), tk: "", w: byP[k].length }));
+  $("#stat").innerHTML = `Board seats from SEC Forms 3/4/5 · <b>${d.window[0].slice(0, 7)} – ${d.asof.slice(0, 7)}</b> · ${C.length.toLocaleString()} listed companies · ${P.length.toLocaleString()} directors`;
+  const pByCik = new Map(P.map((p, k) => [p[0], k]));
+  mine = new Set(store.get("bt-mine-cik", []).map(c => pByCik.get(c)).filter(k => k != null));
+  const saved = store.get("bt-state-" + d.asof, null);
+  // Open on a well-known, well-connected board.
+  const def = Math.max(0, C.findIndex(c => c[2] === "CRM"));
+  st.center = { t: "c", i: def };
+  if (saved && saved.center && (saved.center.t === "c" ? C[saved.center.i] : P[saved.center.i])) Object.assign(st, saved);
+  renderAll();
+}).catch(() => { $("#side").innerHTML = '<p class="note">The board data file did not load. Reload the page to try again.</p>'; });
+</script>
