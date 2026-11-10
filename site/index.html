@@ -215,6 +215,8 @@ function pathGraph(chains) {
 
 function drawWeb(graph, mode) {
   const el = $("#web"), W = el.clientWidth, H = el.clientHeight, R = Math.min(W, H);
+  // A page opened in a background tab can have no size yet; draw once it does.
+  if (!W || !H) { new ResizeObserver((_, ro) => { if (el.clientWidth && el.clientHeight) { ro.disconnect(); drawWeb(graph, mode); } }).observe(el); return; }
   if (sim) sim.stop();
   root.selectAll("*").remove();
   curNodes = graph.nodes; curLinks = graph.links;
